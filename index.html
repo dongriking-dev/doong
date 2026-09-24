@@ -1,9 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
- <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
-<!-- またはDataURL埋め込み -->
-<link rel="icon" type="image/png" sizes="16x16" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACbElEQVR4AZxRTWsUQRB91TOzn7ObNYKJp0gkNxGMLEHBD9Ac/MCLevFi/oGHqGwQEhJFApqDV0/iQRBPERFEMOhFgh4ET8GAiiAGVIzJZjYzs9O+7s4XHtMz1d1VXe/V62oVdnTrsLZ726Yggv+HiAfl+Qh8H54XwFM+fLMyZs625qutjtmL8hAEPirlMmq1KnbQwmqICq3WUYXvexAlJtWasjMnWYt5PAzDIm6N38DpU4P4PP8RvXt6MFA/iPm5D45AryUTt0kAF/T9AN27ujA0dAk7OzuZArx+9RxPHj/A4SMnmSXQNuomSyAMZ4x6vGepmMfevj4mKRQKJWitMXHzNrMVqpUKPGUgQt/9xgOzIVohF/jo7urCo4f3SQmMNIZx5+495PIFJEmMly+eIlcIwFs6NGdHIBriaZSKJcy+ncH4xCSP3H/t6hULphDMzLzha/gkcDBTZW0HSvNRLOVhxthowywb1rg+jMbIKOr1fmjzseD6oVND+RBBkM+txzdW04MkSTA1NYlyWMbKSguZziAmQwNOgSKvTpHECbIss2YaY/bxagwDOHPuAnp696FFH5kYOEkEhMIOkiFqRVDUlKYp4jhGFEUEtNjcHObmPqHZXEE7SfkybYsxRZwCojVjUbOF8xcv28OYasxmjA3df+AQFheXkKZMQsYugNVhhyXQdDWlx3yq2Xfv0V8/huODZzFw9ASmp5/h1+8/VJSwYEaQk292mp4loCaQA+22xnJzGT8WFvD1yzcsfP+Jxb9LFqwpUbO2MUcBO5QiUhT3JkoVbcpcZaPiVsz7R5S9eWcRgYjYZBGBAPgHAAD//7hBH7QAAAAGSURBVAMAEqP2gtYcs3QAAAAASUVORK5CYII=">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>doong owner</title>
@@ -35,6 +32,8 @@
   button.danger:hover { background: #b53838; }
   button.green { background: #2ba36b; }
   button.green:hover { background: #238a5a; }
+  button.purple { background: #8b5cf6; }
+  button.purple:hover { background: #7c4ddb; }
   .session-info {
     font-size: 12px; color: #9aa3b2; margin-bottom: 12px;
     word-break: break-all; line-height: 1.7;
@@ -72,6 +71,7 @@
   }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .empty { color: #6b7280; font-size: 13px; padding: 20px; text-align: center; grid-column: 1/-1; }
+  .section-title { font-size: 14px; margin: 0 0 8px; color: #9aa3b2; }
 </style>
 </head>
 <body>
@@ -83,13 +83,32 @@
       クライアントURL: <code id="clientUrl"></code>
       <button type="button" class="copy-btn" onclick="copyClientUrl()">📋 コピー</button>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">🌐 URL送信</div>
     <label>対象URL</label>
     <input type="text" id="urlInput" placeholder="https://example.com">
     <div>
       <button type="button" onclick="sendToAll()">📢 全員にURL送信</button>
-      <button type="button" class="green" onclick="requestShareAll()">🖥️ 全員に画面共有要求</button>
       <button type="button" class="danger" onclick="resetAll()">🛑 全員リセット</button>
-      <button type="button" class="danger" onclick="clearAllUsers()">🗑️ 一覧クリア</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">🖥️ 画面共有</div>
+    <div>
+      <button type="button" class="green" onclick="requestShareAll()">🖥️ 全員に画面共有要求</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">🎵 音楽再生（MP3）</div>
+    <label>MP3のURL</label>
+    <input type="text" id="musicInput" placeholder="https://example.com/song.mp3">
+    <div>
+      <button type="button" class="purple" onclick="playMusicAll()">🎵 全員に音楽を流す</button>
+      <button type="button" class="danger" onclick="stopMusicAll()">🔇 全員停止</button>
     </div>
   </div>
 
@@ -116,7 +135,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== 固定セッションID =====
 const FIXED_SESSION_ID = "doong-room";
 const sessionId = FIXED_SESSION_ID;
 
@@ -141,7 +159,6 @@ onValue(usersRef, (snap) => {
   const users = snap.val() || {};
   const now = Date.now();
 
-  // 死んだユーザー削除
   for (const [uid, user] of Object.entries(users)) {
     const lastSeen = user.status && user.status.lastSeen ? user.status.lastSeen : 0;
     if (now - lastSeen > USER_TIMEOUT_MS) {
@@ -191,6 +208,8 @@ function createUserCard(uid, user) {
     <div class="actions">
       <button type="button" data-act="send" data-uid="${uid}">URL送信</button>
       <button type="button" class="green" data-act="share" data-uid="${uid}">画面共有要求</button>
+      <button type="button" class="purple" data-act="music" data-uid="${uid}">🎵 音楽を流す</button>
+      <button type="button" class="danger" data-act="musicstop" data-uid="${uid}">🔇 停止</button>
       <button type="button" class="danger" data-act="stop" data-uid="${uid}">共有停止</button>
       <button type="button" class="danger" data-act="delete" data-uid="${uid}">削除</button>
     </div>
@@ -199,6 +218,8 @@ function createUserCard(uid, user) {
 
   card.querySelector('[data-act="send"]').onclick = () => sendToUser(uid);
   card.querySelector('[data-act="share"]').onclick = () => requestShareUser(uid);
+  card.querySelector('[data-act="music"]').onclick = () => playMusicUser(uid);
+  card.querySelector('[data-act="musicstop"]').onclick = () => stopMusicUser(uid);
   card.querySelector('[data-act="stop"]').onclick = () => closePeer(uid);
   card.querySelector('[data-act="delete"]').onclick = () => deleteUser(uid);
 }
@@ -284,12 +305,6 @@ async function deleteUser(uid) {
   await remove(ref(db, `sessions/${sessionId}/users/${uid}`));
 }
 
-async function clearAllUsers() {
-  if (!confirm("全ユーザーを一覧から削除しますか？")) return;
-  await remove(ref(db, `sessions/${sessionId}/users`));
-  usersEl.innerHTML = '<div class="empty">待機中...</div>';
-}
-
 // ===== URL 送信 =====
 async function sendToAll() {
   const url = document.getElementById("urlInput").value.trim();
@@ -326,6 +341,49 @@ async function resetAll() {
   await set(ref(db, `sessions/${sessionId}/command`), {
     url: "", timestamp: Date.now(), reset: true, target: "all"
   });
+}
+
+// ===== 音楽再生 =====
+async function playMusicAll() {
+  const url = document.getElementById("musicInput").value.trim();
+  if (!url) return alert("MP3のURLを入力してください");
+  await set(ref(db, `sessions/${sessionId}/music`), {
+    url,
+    timestamp: Date.now(),
+    play: true,
+    target: "all"
+  });
+  alert("全員に音楽を流しました");
+}
+
+async function stopMusicAll() {
+  await set(ref(db, `sessions/${sessionId}/music`), {
+    url: "",
+    timestamp: Date.now(),
+    play: false,
+    target: "all"
+  });
+  alert("全員の音楽を停止しました");
+}
+
+async function playMusicUser(uid) {
+  const url = document.getElementById("musicInput").value.trim();
+  if (!url) return alert("MP3のURLを入力してください");
+  await set(ref(db, `sessions/${sessionId}/users/${uid}/music`), {
+    url,
+    timestamp: Date.now(),
+    play: true
+  });
+  alert(`${uid} に音楽を流しました`);
+}
+
+async function stopMusicUser(uid) {
+  await set(ref(db, `sessions/${sessionId}/users/${uid}/music`), {
+    url: "",
+    timestamp: Date.now(),
+    play: false
+  });
+  alert(`${uid} の音楽を停止しました`);
 }
 </script>
 </body>
