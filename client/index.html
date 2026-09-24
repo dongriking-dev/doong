@@ -23,9 +23,7 @@
     display: none; flex-direction: column;
     background: #000;
   }
-  #overlay iframe {
-    flex: 1; width: 100%; border: 0; background: #fff;
-  }
+  #overlay iframe { flex: 1; width: 100%; border: 0; background: #fff; }
   #overlay .bar {
     padding: 10px 14px; background: #111;
     font-size: 13px; display: flex; justify-content: space-between;
@@ -45,47 +43,12 @@
     padding: 4px 10px; border-radius: 999px; display: none;
   }
   #status.offline { color: #ff8c8c; }
-  #prompt {
-    position: fixed; inset: 0; z-index: 30;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.9);
-  }
-  #prompt .box {
-    background: #111; padding: 28px 24px; border-radius: 14px;
-    text-align: center; max-width: 320px;
-    border: 1px solid #222;
-  }
-  #prompt h3 { font-size: 16px; margin-bottom: 10px; }
-  #prompt p {
-    font-size: 13px; color: #9aa3b2; line-height: 1.6;
-    margin-bottom: 18px;
-  }
-  #prompt button {
-    padding: 14px 22px; border-radius: 8px;
-    border: none; background: #3b6cff; color: #fff;
-    font-size: 15px; cursor: pointer; width: 100%;
-    position: relative; z-index: 31;
-  }
-  #prompt button:hover { background: #2a55d8; }
-  #prompt button:active { background: #1f3fb0; }
-  #prompt .hint {
-    font-size: 11px; color: #6b7280; margin-top: 12px;
-  }
 </style>
 </head>
 <body>
 
 <canvas id="particles"></canvas>
 <div id="status">online</div>
-
-<div id="prompt">
-  <div class="box">
-    <h3>🖥️ 画面共有</h3>
-    <p>管理者と画面を共有します。<br>許可してください。</p>
-    <button type="button" id="startShare">画面共有を開始</button>
-    <div class="hint">このアプリを閉じても通知は届きます</div>
-  </div>
-</div>
 
 <div id="overlay">
   <div class="bar">
@@ -100,6 +63,9 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/fireba
 import {
   getDatabase, ref, onValue, set, push, update, remove, onDisconnect
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import {
+  getMessaging, getToken, onMessage
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
 // ===== Firebase 設定 =====
 const firebaseConfig = {
@@ -111,6 +77,10 @@ const firebaseConfig = {
   messagingSenderId: "95643976140",
   appId: "1:95643976140:web:cdcb757a9bc25bc7a75d69"
 };
+
+// ★★★ Firebaseコンソールで取得したVAPIDキーをここに貼ってください ★★★
+const VAPID_KEY = "YOUR_VAPID_PUBLIC_KEY_HERE";
+
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
@@ -118,48 +88,81 @@ const db = getDatabase(app);
 const FIXED_SESSION_ID = "doong-room";
 const sessionId = FIXED_SESSION_ID;
 
-// ===== ★重要: ユーザーIDを sessionStorage で固定 ★ =====
-// 同じタブでリロードしても同じIDを使う（重複防止）
+// ===== ユーザーID =====
 let userId = sessionStorage.getItem("doongUserId");
 if (!userId) {
   userId = "u-" + Math.random().toString(36).slice(2, 8);
   sessionStorage.setItem("doongUserId", userId);
 }
-console.log("My userId:", userId);
 
-// ページ離脱時に自分のデータを削除
-window.addEventListener("pagehide", () => {
-  try {
-    navigator.sendBeacon &&
-      navigator.sendBeacon("about:blank"); // ダミー
-  } catch(e){}
-  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
-});
-window.addEventListener("beforeunload", () => {
-  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
-});
-
-// ===== Service Worker 登録（PWA用） =====
+// ===== Service Worker 登録 =====
+let swReg = null;
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(()=>{});
+  navigator.serviceWorker.register("./sw.js").then(reg => {
+    swReg = reg;
+    tryInitFCM();
+  }).catch(()=>{});
 }
 
-// ===== 通知許可（ユーザー操作後に要求） =====
+// ===== 通知許可（自動で聞かない、初回だけ一度） =====
 let isForeground = true;
 document.addEventListener("visibilitychange", () => {
   isForeground = document.visibilityState === "visible";
 });
-function notifyIfBackground(title, body) {
-  if (!isForeground && "Notification" in window && Notification.permission === "granted") {
-    try { new Notification(title, { body, icon: "./icons/icon-192.png" }); } catch(e){}
+
+// ===== FCM 初期化（バックグラウンド通知用） =====
+let fcmToken = null;
+async function tryInitFCM() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+
+  try {
+    const messaging = getMessaging(app);
+    fcmToken = await getToken(messaging, {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: swReg
+    });
+    if (fcmToken) {
+      console.log("FCM token取得:", fcmToken);
+      // トークンをFirebaseに保存（管理者が後でプッシュ送信に使える）
+      set(ref(db, `sessions/${sessionId}/users/${userId}/fcmToken`), fcmToken);
+    }
+
+    // フォアグラウンド時のプッシュ受信
+    onMessage(messaging, (payload) => {
+      const title = payload.notification?.title || "通知";
+      const body = payload.notification?.body || "";
+      try { new Notification(title, { body }); } catch(e){}
+    });
+  } catch (e) {
+    console.warn("FCM初期化スキップ:", e.message);
   }
 }
+
+// 通知許可をユーザーの初回クリック時に要求（画面のどこかタップでOK）
+function ensureNotificationPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().then(perm => {
+      if (perm === "granted") tryInitFCM();
+    });
+  }
+}
+// 最初のタップで通知許可を促す
+document.addEventListener("click", ensureNotificationPermission, { once: true });
+document.addEventListener("touchstart", ensureNotificationPermission, { once: true });
 
 // ===== オンライン状態 =====
 const statusRef = ref(db, `sessions/${sessionId}/users/${userId}/status`);
 set(statusRef, { online: true, lastSeen: Date.now() });
 onDisconnect(statusRef).set({ online: false, lastSeen: Date.now() });
 setInterval(() => update(statusRef, { lastSeen: Date.now() }), 10000);
+
+window.addEventListener("pagehide", () => {
+  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
+});
+window.addEventListener("beforeunload", () => {
+  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
+});
 
 // ===== コマンド受信（全体） =====
 onValue(ref(db, `sessions/${sessionId}/command`), (snap) => {
@@ -182,14 +185,31 @@ function handleCommand(cmd) {
 
   if (cmd.reset || cmd.url === "") {
     closeOverlay();
-    notifyIfBackground("リセット", "管理者が表示をリセットしました");
     return;
   }
-  if (cmd.url) {
-    openOverlay(cmd.url);
-    notifyIfBackground("URLが送信されました", cmd.url);
-  }
+  if (cmd.url) openOverlay(cmd.url);
 }
+
+// ===== 画面共有要求の監視 =====
+let lastShareReqTs = 0;
+onValue(ref(db, `sessions/${sessionId}/shareRequest`), (snap) => {
+  const req = snap.val();
+  if (!req || !req.ts) return;
+  if (req.ts > lastShareReqTs) {
+    lastShareReqTs = req.ts;
+    // 自動で共有を試みる（ブラウザが許可ダイアログを出す）
+    autoStartShare();
+  }
+});
+
+onValue(ref(db, `sessions/${sessionId}/users/${userId}/shareRequest`), (snap) => {
+  const req = snap.val();
+  if (!req || !req.ts) return;
+  if (req.ts > lastShareReqTs) {
+    lastShareReqTs = req.ts;
+    autoStartShare();
+  }
+});
 
 // ===== Overlay 制御 =====
 function openOverlay(url) {
@@ -203,7 +223,7 @@ function openOverlay(url) {
       window.open(url, "_blank");
       return;
     }
-  } catch(e) {}
+  } catch(e){}
 
   frame.src = url;
   label.textContent = url;
@@ -217,26 +237,22 @@ function closeOverlay() {
 }
 document.getElementById("closeOverlay").onclick = closeOverlay;
 
-// ===== ★ 画面共有ボタン ★ =====
-const rtcConfig = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-};
+// ===== WebRTC 画面共有 =====
+const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 let pc = null;
 let localStream = null;
 let answerApplied = false;
+let isSharing = false;
 
-const startBtn = document.getElementById("startShare");
-
-startBtn.addEventListener("click", async (ev) => {
-  ev.preventDefault();
-  ev.stopPropagation();
-  startBtn.disabled = true;
-  startBtn.textContent = "起動中...";
+// 自動で共有開始（ページ読み込み直後にも呼ぶ）
+async function autoStartShare() {
+  if (isSharing) return;
+  isSharing = true;
 
   try {
-    // 通知許可を先に要求（ボタン押下後なので安全）
-    if ("Notification" in window && Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch(e){}
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      isSharing = false;
+      return;
     }
 
     localStream = await navigator.mediaDevices.getDisplayMedia({
@@ -245,7 +261,6 @@ startBtn.addEventListener("click", async (ev) => {
     });
     localStream.getVideoTracks()[0].onended = () => stopSharing();
 
-    document.getElementById("prompt").style.display = "none";
     const st = document.getElementById("status");
     st.style.display = "block";
     st.classList.remove("offline");
@@ -253,11 +268,27 @@ startBtn.addEventListener("click", async (ev) => {
 
     await startWebRTC();
   } catch (e) {
-    console.error(e);
-    alert("画面共有が拒否されました: " + e.message);
-    startBtn.disabled = false;
-    startBtn.textContent = "画面共有を開始";
+    // ★ アラートは出さない。コンソールのみ
+    console.warn("画面共有は開始されませんでした:", e.message);
+    isSharing = false;
+    // ユーザーが拒否した場合は、次回要求時にまた試す
   }
+}
+
+// ★ページ読み込み時に自動で共有を試みる（初回は許可ダイアログが出る）
+window.addEventListener("load", () => {
+  // ブラウザのセキュリティにより、初回はユーザー操作が必要な場合がある。
+  // クリック1回で自動共有を試みる。
+  const tryOnce = () => {
+    document.removeEventListener("click", tryOnce);
+    document.removeEventListener("touchstart", tryOnce);
+    autoStartShare();
+  };
+  document.addEventListener("click", tryOnce, { once: true });
+  document.addEventListener("touchstart", tryOnce, { once: true });
+
+  // 既に許可済みなら即開始を試みる
+  setTimeout(() => { autoStartShare(); }, 300);
 });
 
 async function startWebRTC() {
@@ -292,7 +323,7 @@ async function startWebRTC() {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sig.answer));
         answerApplied = true;
-      } catch(e) { console.warn(e); }
+      } catch(e){}
     }
 
     if (sig.adminIce) {
@@ -321,14 +352,12 @@ function stopSharing() {
   if (localStream) localStream.getTracks().forEach(t => t.stop());
   if (pc) { try { pc.close(); } catch(e){} }
   pc = null; localStream = null; answerApplied = false;
+  isSharing = false;
   remove(ref(db, `sessions/${sessionId}/users/${userId}/signal`));
-  document.getElementById("prompt").style.display = "flex";
   document.getElementById("status").style.display = "none";
-  startBtn.disabled = false;
-  startBtn.textContent = "画面共有を開始";
 }
 
-// ===== 粒子アニメーション =====
+// ===== 粒子アニメーション（白い粒子が上に） =====
 const canvas = document.getElementById("particles");
 const ctx = canvas.getContext("2d");
 let particles = [];
@@ -342,16 +371,16 @@ window.addEventListener("resize", () => { resize(); createParticles(); });
 resize();
 
 function createParticles() {
-  const count = Math.min(Math.floor((W * H) / 18000), 220);
+  const count = Math.min(Math.floor((W * H) / 14000), 260);
   particles = [];
   for (let i = 0; i < count; i++) {
     particles.push({
       x: Math.random() * W,
       y: Math.random() * H,
-      r: Math.random() * 2.5 + 0.4,
-      vy: -(Math.random() * 0.4 + 0.1),
+      r: Math.random() * 2.8 + 0.5,
+      vy: -(Math.random() * 0.5 + 0.15),
       vx: (Math.random() - 0.5) * 0.15,
-      a: Math.random() * 0.5 + 0.2
+      a: Math.random() * 0.6 + 0.3
     });
   }
 }
