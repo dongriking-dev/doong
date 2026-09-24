@@ -2,8 +2,11 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Doong</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Client</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -24,32 +27,47 @@
     flex: 1; width: 100%; border: 0; background: #fff;
   }
   #overlay .bar {
-    padding: 10px; text-align: center; background: #111;
+    padding: 10px 14px; background: #111;
     font-size: 13px; display: flex; justify-content: space-between;
-    align-items: center;
+    align-items: center; gap: 10px;
+  }
+  #overlay .bar span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #overlay .bar button {
     background: #d84a4a; border: none; color: #fff;
     padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    flex-shrink: 0;
   }
   #status {
     position: fixed; top: 10px; left: 10px; z-index: 20;
-    font-size: 11px; color: #6dffb0; background: rgba(0,0,0,0.5);
-    padding: 4px 8px; border-radius: 999px; display: none;
+    font-size: 11px; color: #6dffb0; background: rgba(0,0,0,0.6);
+    padding: 4px 10px; border-radius: 999px; display: none;
   }
+  #status.offline { color: #ff8c8c; }
   #prompt {
     position: fixed; inset: 0; z-index: 30;
     display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.85);
+    background: rgba(0,0,0,0.9);
   }
   #prompt .box {
-    background: #111; padding: 24px; border-radius: 12px;
+    background: #111; padding: 28px 24px; border-radius: 14px;
     text-align: center; max-width: 320px;
+    border: 1px solid #222;
+  }
+  #prompt h3 { font-size: 16px; margin-bottom: 10px; }
+  #prompt p {
+    font-size: 13px; color: #9aa3b2; line-height: 1.6;
+    margin-bottom: 18px;
   }
   #prompt button {
-    margin-top: 14px; padding: 10px 20px; border-radius: 8px;
+    padding: 12px 22px; border-radius: 8px;
     border: none; background: #3b6cff; color: #fff;
-    font-size: 14px; cursor: pointer;
+    font-size: 14px; cursor: pointer; width: 100%;
+  }
+  #prompt button:hover { background: #2a55d8; }
+  #prompt .hint {
+    font-size: 11px; color: #6b7280; margin-top: 12px;
   }
 </style>
 </head>
@@ -60,11 +78,10 @@
 
 <div id="prompt">
   <div class="box">
-    <h3>画面共有の許可</h3>
-    <p style="font-size:13px;color:#9aa3b2;margin-top:8px;">
-      管理者に画面を共有します。許可してください。
-    </p>
+    <h3>🖥️ 画面共有</h3>
+    <p>管理者と画面を共有します。<br>許可してください。</p>
     <button id="startShare">画面共有を開始</button>
+    <div class="hint">このアプリを閉じても通知は届きます</div>
   </div>
 </div>
 
@@ -73,28 +90,29 @@
     <span id="urlLabel"></span>
     <button id="closeOverlay">閉じる</button>
   </div>
-  <iframe id="contentFrame" allow="fullscreen"></iframe>
+  <iframe id="contentFrame" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, push, update, serverTimestamp,
-  onDisconnect, remove
+  getDatabase, ref, onValue, set, push, update, remove
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ===== Firebase 設定 =====
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
-  projectId: "YOUR_PROJECT",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDsoktNvfhnMSBrHLyhSjgLBLYiih7cMFE",
+  authDomain: "doong-672e7.firebaseapp.com",
+  databaseURL: "https://doong-672e7-default-rtdb.firebaseio.com",
+  projectId: "doong-672e7",
+  storageBucket: "doong-672e7.firebasestorage.app",
+  messagingSenderId: "95643976140",
+  appId: "1:95643976140:web:cdcb757a9bc25bc7a75d69"
 };
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== セッションID と ユーザーID =====
+// ===== セッション/ユーザーID =====
 const params = new URLSearchParams(location.search);
 const sessionId = params.get("s") || "default";
 let userId = params.get("u");
@@ -104,45 +122,52 @@ if (!userId) {
   history.replaceState(null, "", "?" + params.toString());
 }
 
-// ===== オンライン状態管理 =====
-const userRef = ref(db, `sessions/${sessionId}/users/${userId}`);
+// ===== Service Worker 登録 =====
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(()=>{});
+}
+
+// ===== 通知許可 =====
+if ("Notification" in window && Notification.permission === "default") {
+  Notification.requestPermission();
+}
+let isForeground = true;
+document.addEventListener("visibilitychange", () => {
+  isForeground = document.visibilityState === "visible";
+});
+function notifyIfBackground(title, body) {
+  if (!isForeground && "Notification" in window && Notification.permission === "granted") {
+    try { new Notification(title, { body, icon: "./icons/icon-192.png" }); } catch(e){}
+  }
+}
+
+// ===== オンライン状態 =====
 const statusRef = ref(db, `sessions/${sessionId}/users/${userId}/status`);
 set(statusRef, { online: true, lastSeen: Date.now() });
 onDisconnect(statusRef).set({ online: false, lastSeen: Date.now() });
 setInterval(() => update(statusRef, { lastSeen: Date.now() }), 15000);
 
-// ===== 通知（アプリを閉じている/バックグラウンド時） =====
-let isForeground = true;
-document.addEventListener("visibilitychange", () => {
-  isForeground = document.visibilityState === "visible";
+// 離脱時
+window.addEventListener("beforeunload", () => {
+  set(statusRef, { online: false, lastSeen: Date.now() });
 });
 
-if ("Notification" in window && Notification.permission === "default") {
-  Notification.requestPermission();
-}
-
-function notifyIfBackground(title, body) {
-  if (!isForeground && "Notification" in window && Notification.permission === "granted") {
-    new Notification(title, { body, icon: "" });
-  }
-}
-
-// ===== コマンド受信（全員向け） =====
+// ===== コマンド受信（全体） =====
 onValue(ref(db, `sessions/${sessionId}/command`), (snap) => {
   const cmd = snap.val();
   if (!cmd) return;
-  handleCommand(cmd, "all");
+  handleCommand(cmd);
 });
 
 // ===== コマンド受信（個別） =====
 onValue(ref(db, `sessions/${sessionId}/users/${userId}/command`), (snap) => {
   const cmd = snap.val();
   if (!cmd) return;
-  handleCommand(cmd, "individual");
+  handleCommand(cmd);
 });
 
 let lastTs = 0;
-function handleCommand(cmd, scope) {
+function handleCommand(cmd) {
   if (!cmd.timestamp || cmd.timestamp === lastTs) return;
   lastTs = cmd.timestamp;
 
@@ -157,10 +182,19 @@ function handleCommand(cmd, scope) {
   }
 }
 
+// ===== Overlay 制御 =====
 function openOverlay(url) {
   const overlay = document.getElementById("overlay");
   const frame = document.getElementById("contentFrame");
   const label = document.getElementById("urlLabel");
+
+  // 埋め込み拒否サイトは新規タブ
+  const blocked = /(^|\.)google\.com|(^|\.)x\.com|(^|\.)twitter\.com|(^|\.)facebook\.com|(^|\.)instagram\.com|(^|\.)youtube\.com/i;
+  if (blocked.test(new URL(url, location.href).hostname)) {
+    window.open(url, "_blank");
+    return;
+  }
+
   frame.src = url;
   label.textContent = url;
   overlay.style.display = "flex";
@@ -173,13 +207,13 @@ function closeOverlay() {
 }
 document.getElementById("closeOverlay").onclick = closeOverlay;
 
-// ===== WebRTC 画面共有 =====
+// ===== WebRTC 画面共有（送信側） =====
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
-
 let pc = null;
 let localStream = null;
+let answerApplied = false;
 
 document.getElementById("startShare").onclick = async () => {
   try {
@@ -187,8 +221,14 @@ document.getElementById("startShare").onclick = async () => {
       video: { frameRate: 15 },
       audio: false
     });
+    localStream.getVideoTracks()[0].onended = () => stopSharing();
+
     document.getElementById("prompt").style.display = "none";
-    document.getElementById("status").style.display = "block";
+    const st = document.getElementById("status");
+    st.style.display = "block";
+    st.classList.remove("offline");
+    st.textContent = "online";
+
     await startWebRTC();
   } catch (e) {
     alert("画面共有が拒否されました: " + e.message);
@@ -197,6 +237,7 @@ document.getElementById("startShare").onclick = async () => {
 
 async function startWebRTC() {
   pc = new RTCPeerConnection(rtcConfig);
+  answerApplied = false;
 
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
@@ -207,39 +248,59 @@ async function startWebRTC() {
     }
   };
 
-  // 管理者側からの answer を監視
-  onValue(ref(db, `sessions/${sessionId}/users/${userId}/signal`), async (snap) => {
-    const sig = snap.val() || {};
-    if (sig.answer && pc.signalingState === "have-local-offer") {
-      await pc.setRemoteDescription(new RTCSessionDescription(sig.answer));
+  pc.onconnectionstatechange = () => {
+    const st = document.getElementById("status");
+    if (pc.connectionState === "connected") {
+      st.textContent = "connected";
+      st.classList.remove("offline");
+    } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      st.textContent = "offline";
+      st.classList.add("offline");
     }
+  };
+
+  // 管理者からのシグナル監視
+  const sigRef = ref(db, `sessions/${sessionId}/users/${userId}/signal`);
+  onValue(sigRef, async (snap) => {
+    const sig = snap.val() || {};
+
+    if (sig.answer && !answerApplied && pc.signalingState === "have-local-offer") {
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sig.answer));
+        answerApplied = true;
+      } catch(e) { console.warn(e); }
+    }
+
     if (sig.adminIce) {
       for (const c of Object.values(sig.adminIce)) {
         try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e){}
       }
     }
-    if (sig.adminStop && sig.adminStop.ts > (startWebRTC.lastStop || 0)) {
-      startWebRTC.lastStop = sig.adminStop.ts;
-      stopSharing();
+
+    if (sig.adminStop) {
+      const last = window.__lastStop || 0;
+      if (sig.adminStop.ts > last) {
+        window.__lastStop = sig.adminStop.ts;
+        stopSharing();
+      }
     }
   });
 
+  // Offer 送信
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  set(ref(db, `sessions/${sessionId}/users/${userId}/signal/offer`), {
-    type: offer.type, sdp: offer.sdp
+  await set(ref(db, `sessions/${sessionId}/users/${userId}/signal`), {
+    offer: { type: offer.type, sdp: offer.sdp }
   });
-  // 前回の answer をクリア
-  remove(ref(db, `sessions/${sessionId}/users/${userId}/signal/answer`));
 }
 
 function stopSharing() {
   if (localStream) localStream.getTracks().forEach(t => t.stop());
-  if (pc) pc.close();
-  pc = null; localStream = null;
+  if (pc) { try { pc.close(); } catch(e){} }
+  pc = null; localStream = null; answerApplied = false;
+  remove(ref(db, `sessions/${sessionId}/users/${userId}/signal`));
   document.getElementById("prompt").style.display = "flex";
   document.getElementById("status").style.display = "none";
-  remove(ref(db, `sessions/${sessionId}/users/${userId}/signal`));
 }
 
 // ===== 粒子アニメーション =====
@@ -252,17 +313,17 @@ function resize() {
   W = canvas.width = window.innerWidth;
   H = canvas.height = window.innerHeight;
 }
-window.addEventListener("resize", resize);
+window.addEventListener("resize", () => { resize(); createParticles(); });
 resize();
 
 function createParticles() {
-  const count = Math.floor((W * H) / 18000);
+  const count = Math.min(Math.floor((W * H) / 18000), 220);
   particles = [];
   for (let i = 0; i < count; i++) {
     particles.push({
       x: Math.random() * W,
       y: Math.random() * H,
-      r: Math.random() * 2.5 + 0.5,
+      r: Math.random() * 2.5 + 0.4,
       vy: -(Math.random() * 0.4 + 0.1),
       vx: (Math.random() - 0.5) * 0.15,
       a: Math.random() * 0.5 + 0.2
@@ -270,7 +331,6 @@ function createParticles() {
   }
 }
 createParticles();
-window.addEventListener("resize", createParticles);
 
 function draw() {
   ctx.fillStyle = "rgba(0,0,0,0.35)";
