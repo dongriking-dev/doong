@@ -31,12 +31,17 @@
   button.danger { background: #d84a4a; }
   button.danger:hover { background: #b53838; }
   .session-info {
-    font-size: 12px; color: #9aa3b2; margin-bottom: 8px;
-    word-break: break-all;
+    font-size: 12px; color: #9aa3b2; margin-bottom: 12px;
+    word-break: break-all; line-height: 1.7;
   }
   .session-info code {
     background: #0f1117; padding: 2px 6px; border-radius: 4px; color: #6dffb0;
   }
+  .copy-btn {
+    font-size: 11px; padding: 4px 8px; margin-left: 6px;
+    background: #2a2f3d; color: #9aa3b2;
+  }
+  .copy-btn:hover { background: #3a4055; }
   #users {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
@@ -62,7 +67,7 @@
     aspect-ratio: 16/9; object-fit: contain;
   }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-  .empty { color: #6b7280; font-size: 13px; padding: 20px; text-align: center; }
+  .empty { color: #6b7280; font-size: 13px; padding: 20px; text-align: center; grid-column: 1/-1; }
 </style>
 </head>
 <body>
@@ -70,8 +75,9 @@
 
   <div class="panel">
     <div class="session-info">
-      セッションID: <code id="sessionId"></code><br>
+      セッションID（固定）: <code id="sessionId"></code><br>
       クライアントURL: <code id="clientUrl"></code>
+      <button class="copy-btn" onclick="copyClientUrl()">📋 コピー</button>
     </div>
     <label>対象URL</label>
     <input type="text" id="urlInput" placeholder="https://example.com">
@@ -89,7 +95,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, push, update, remove
+  getDatabase, ref, onValue, set, push, update
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ===== Firebase 設定 =====
@@ -105,20 +111,23 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== セッションID =====
-const params = new URLSearchParams(location.search);
-let sessionId = params.get("s");
-if (!sessionId) {
-  sessionId = Math.random().toString(36).slice(2, 8);
-  params.set("s", sessionId);
-  history.replaceState(null, "", "?" + params.toString());
-}
+// ===== ★ 固定セッションID ★ =====
+// ここを変更すれば部屋名を変えられます
+const FIXED_SESSION_ID = "doong-room";
+const sessionId = FIXED_SESSION_ID;
+
 document.getElementById("sessionId").textContent = sessionId;
 
-// クライアントURLの表示
+// クライアントURLの表示（固定）
 const baseUrl = location.origin + location.pathname.replace(/index\.html$/, "").replace(/\/$/, "") + "/client/";
 const clientUrl = baseUrl + "?s=" + sessionId;
 document.getElementById("clientUrl").textContent = clientUrl;
+
+window.copyClientUrl = function() {
+  navigator.clipboard.writeText(clientUrl).then(() => {
+    alert("クライアントURLをコピーしました:\n" + clientUrl);
+  });
+};
 
 // ===== ユーザー監視 =====
 const usersEl = document.getElementById("users");
@@ -130,7 +139,6 @@ onValue(usersRef, (snap) => {
   const users = snap.val() || {};
   const ids = Object.keys(users);
 
-  // 空メッセージの制御
   const empty = usersEl.querySelector(".empty");
   if (ids.length === 0) {
     if (!empty) {
@@ -143,7 +151,6 @@ onValue(usersRef, (snap) => {
     empty.remove();
   }
 
-  // 新規ユーザー
   for (const uid of ids) {
     if (!document.getElementById("card-" + uid)) {
       createUserCard(uid, users[uid]);
@@ -153,7 +160,6 @@ onValue(usersRef, (snap) => {
     handleIce(uid, users[uid]);
   }
 
-  // 削除されたユーザー
   document.querySelectorAll(".user-card").forEach(card => {
     const uid = card.dataset.uid;
     if (!users[uid]) {
