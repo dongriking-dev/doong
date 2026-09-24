@@ -77,13 +77,14 @@
     <div class="session-info">
       セッションID（固定）: <code id="sessionId"></code><br>
       クライアントURL: <code id="clientUrl"></code>
-      <button class="copy-btn" onclick="copyClientUrl()">📋 コピー</button>
+      <button type="button" class="copy-btn" onclick="copyClientUrl()">📋 コピー</button>
     </div>
     <label>対象URL</label>
     <input type="text" id="urlInput" placeholder="https://example.com">
     <div>
-      <button onclick="sendToAll()">📢 全員に送信</button>
-      <button class="danger" onclick="resetAll()">🛑 全員リセット</button>
+      <button type="button" onclick="sendToAll()">📢 全員に送信</button>
+      <button type="button" class="danger" onclick="resetAll()">🛑 全員リセット</button>
+      <button type="button" class="danger" onclick="clearAllUsers()">🗑️ ユーザー一覧を全クリア</button>
     </div>
   </div>
 
@@ -95,7 +96,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, push, update
+  getDatabase, ref, onValue, set, push, update, remove, get
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ===== Firebase 設定 =====
@@ -111,21 +112,20 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== ★ 固定セッションID ★ =====
-// ここを変更すれば部屋名を変えられます
+// ===== 固定セッションID =====
 const FIXED_SESSION_ID = "doong-room";
 const sessionId = FIXED_SESSION_ID;
 
 document.getElementById("sessionId").textContent = sessionId;
 
-// クライアントURLの表示（固定）
 const baseUrl = location.origin + location.pathname.replace(/index\.html$/, "").replace(/\/$/, "") + "/client/";
-const clientUrl = baseUrl + "?s=" + sessionId;
+const clientUrl = baseUrl + "?u=" + "user1"; // 表示用
 document.getElementById("clientUrl").textContent = clientUrl;
 
 window.copyClientUrl = function() {
-  navigator.clipboard.writeText(clientUrl).then(() => {
-    alert("クライアントURLをコピーしました:\n" + clientUrl);
+  const url = baseUrl;
+  navigator.clipboard.writeText(url).then(() => {
+    alert("クライアントURLをコピーしました:\n" + url);
   });
 };
 
@@ -133,10 +133,23 @@ window.copyClientUrl = function() {
 const usersEl = document.getElementById("users");
 const peerConnections = {};
 const processedIce = {};
+const USER_TIMEOUT_MS = 30000; // 30秒以上更新がないユーザーは死んだとみなす
 
 const usersRef = ref(db, `sessions/${sessionId}/users`);
 onValue(usersRef, (snap) => {
   const users = snap.val() || {};
+  const now = Date.now();
+
+  // 死んだユーザーを自動削除
+  for (const [uid, user] of Object.entries(users)) {
+    const lastSeen = user.status && user.status.lastSeen ? user.status.lastSeen : 0;
+    if (now - lastSeen > USER_TIMEOUT_MS) {
+      console.log("古いユーザーを削除:", uid);
+      remove(ref(db, `sessions/${sessionId}/users/${uid}`));
+      return;
+    }
+  }
+
   const ids = Object.keys(users);
 
   const empty = usersEl.querySelector(".empty");
@@ -181,9 +194,10 @@ function createUserCard(uid, user) {
     </div>
     <video id="video-${uid}" autoplay playsinline muted></video>
     <div class="actions">
-      <button data-act="send" data-uid="${uid}">この人にURL送信</button>
-      <button class="danger" data-act="stop" data-uid="${uid}">共有停止</button>
-      <button class="danger" data-act="reset" data-uid="${uid}">リセット</button>
+      <button type="button" data-act="send" data-uid="${uid}">この人にURL送信</button>
+      <button type="button" class="danger" data-act="stop" data-uid="${uid}">共有停止</button>
+      <button type="button" class="danger" data-act="reset" data-uid="${uid}">リセット</button>
+      <button type="button" class="danger" data-act="delete" data-uid="${uid}">削除</button>
     </div>
   `;
   usersEl.appendChild(card);
@@ -191,6 +205,7 @@ function createUserCard(uid, user) {
   card.querySelector('[data-act="send"]').onclick = () => sendToUser(uid);
   card.querySelector('[data-act="stop"]').onclick = () => closePeer(uid);
   card.querySelector('[data-act="reset"]').onclick = () => resetUser(uid);
+  card.querySelector('[data-act="delete"]').onclick = () => deleteUser(uid);
 }
 
 function updateUserStatus(uid, user) {
@@ -201,7 +216,7 @@ function updateUserStatus(uid, user) {
   badge.className = "badge " + (online ? "online" : "offline");
 }
 
-// ===== WebRTC（管理者 = 受信側） =====
+// ===== WebRTC =====
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
@@ -274,6 +289,17 @@ function closePeer(uid) {
 
 function cleanupPeer(uid) {
   closePeer(uid);
+}
+
+async function deleteUser(uid) {
+  cleanupPeer(uid);
+  await remove(ref(db, `sessions/${sessionId}/users/${uid}`));
+}
+
+async function clearAllUsers() {
+  if (!confirm("本当に全ユーザーを一覧から削除しますか？")) return;
+  await remove(ref(db, `sessions/${sessionId}/users`));
+  usersEl.innerHTML = '<div class="empty">待機中... クライアントが接続すると表示されます</div>';
 }
 
 // ===== URL 送信 =====
