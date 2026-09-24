@@ -44,7 +44,6 @@
   }
   #status.offline { color: #ff8c8c; }
 
-  /* 音楽表示 */
   #musicInfo {
     position: fixed; bottom: 12px; left: 12px; z-index: 25;
     font-size: 11px; color: #a78bfa;
@@ -55,9 +54,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #musicInfo.playing { display: block; }
-  #musicInfo::before {
-    content: "🎵 ";
-  }
+  #musicInfo::before { content: "🎵 "; }
 </style>
 </head>
 <body>
@@ -105,12 +102,6 @@ if (!userId) {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./sw.js").catch(()=>{});
 }
-
-// ===== 通知許可 =====
-let isForeground = true;
-document.addEventListener("visibilitychange", () => {
-  isForeground = document.visibilityState === "visible";
-});
 
 // ===== オンライン状態 =====
 const statusRef = ref(db, `sessions/${sessionId}/users/${userId}/status`);
@@ -194,39 +185,31 @@ function closeOverlay() {
 }
 document.getElementById("closeOverlay").onclick = closeOverlay;
 
-// ===== 音楽再生 =====
+// ===== 音楽再生（Base64受信） =====
 const musicEl = document.getElementById("musicInfo");
-let audioEl = null;              // 現在再生中のAudio
+let audioEl = null;
 let lastMusicTs = 0;
-let userInteracted = false;      // ユーザーがタップしたか
 
-// ユーザーの最初のタップを検知（自動再生制限対策）
-document.addEventListener("click", () => { userInteracted = true; }, { once: true });
-document.addEventListener("touchstart", () => { userInteracted = true; }, { once: true });
+function playMusic(dataUrl, name) {
+  if (!dataUrl) return;
 
-function playMusic(url) {
-  if (!url) return;
-
-  // 既存のAudioを停止
   if (audioEl) {
     audioEl.pause();
     audioEl.currentTime = 0;
     audioEl = null;
   }
 
-  audioEl = new Audio(url);
+  audioEl = new Audio(dataUrl);
   audioEl.loop = true;
   audioEl.volume = 1.0;
 
-  musicEl.textContent = url;
+  musicEl.textContent = name || "音楽";
   musicEl.classList.add("playing");
 
   audioEl.play().catch((err) => {
-    // 自動再生がブロックされた → ユーザー操作が必要
     console.warn("自動再生ブロック:", err.message);
-    musicEl.textContent = url + " （タップで再生）";
+    musicEl.textContent = (name || "音楽") + "（タップで再生）";
 
-    // 一度だけユーザー操作で再生を試みる
     const resume = () => {
       audioEl && audioEl.play().catch(()=>{});
       document.removeEventListener("click", resume);
@@ -247,29 +230,29 @@ function stopMusic() {
   musicEl.textContent = "";
 }
 
-// 全体向け音楽
+// 全体向け
 onValue(ref(db, `sessions/${sessionId}/music`), (snap) => {
   const m = snap.val();
   if (!m || !m.timestamp) return;
   if (m.timestamp <= lastMusicTs) return;
   lastMusicTs = m.timestamp;
 
-  if (m.play && m.url) {
-    playMusic(m.url);
+  if (m.play && m.audio) {
+    playMusic(m.audio, m.name);
   } else {
     stopMusic();
   }
 });
 
-// 個別向け音楽
+// 個別向け
 onValue(ref(db, `sessions/${sessionId}/users/${userId}/music`), (snap) => {
   const m = snap.val();
   if (!m || !m.timestamp) return;
   if (m.timestamp <= lastMusicTs) return;
   lastMusicTs = m.timestamp;
 
-  if (m.play && m.url) {
-    playMusic(m.url);
+  if (m.play && m.audio) {
+    playMusic(m.audio, m.name);
   } else {
     stopMusic();
   }
