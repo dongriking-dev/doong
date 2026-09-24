@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>doong owner</title>
 <style>
   * { box-sizing: border-box; }
@@ -29,15 +30,22 @@
   button:hover { background: #2a55d8; }
   button.danger { background: #d84a4a; }
   button.danger:hover { background: #b53838; }
-  .session-info { font-size: 12px; color: #9aa3b2; margin-bottom: 8px; }
+  .session-info {
+    font-size: 12px; color: #9aa3b2; margin-bottom: 8px;
+    word-break: break-all;
+  }
+  .session-info code {
+    background: #0f1117; padding: 2px 6px; border-radius: 4px; color: #6dffb0;
+  }
   #users {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
     gap: 14px;
   }
   .user-card {
     background: #1a1d26; border: 1px solid #2a2f3d;
-    border-radius: 10px; padding: 12px; display: flex; flex-direction: column;
-    gap: 8px;
+    border-radius: 10px; padding: 12px;
+    display: flex; flex-direction: column; gap: 8px;
   }
   .user-card .header {
     display: flex; justify-content: space-between; align-items: center;
@@ -54,14 +62,18 @@
     aspect-ratio: 16/9; object-fit: contain;
   }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { color: #6b7280; font-size: 13px; padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
-  <h1>🎛️ 管理者操作画面</h1>
+  <h1>🎛️ doong owner（管理者画面）</h1>
 
   <div class="panel">
-    <div class="session-info">セッションID: <span id="sessionId"></span></div>
-    <label>対象URL（全員 or 個別送信）</label>
+    <div class="session-info">
+      セッションID: <code id="sessionId"></code><br>
+      クライアントURL: <code id="clientUrl"></code>
+    </div>
+    <label>対象URL</label>
     <input type="text" id="urlInput" placeholder="https://example.com">
     <div>
       <button onclick="sendToAll()">📢 全員に送信</button>
@@ -71,58 +83,77 @@
 
   <div class="panel">
     <h3 style="margin:0 0 10px; font-size:15px;">接続中のユーザー</h3>
-    <div id="users"></div>
+    <div id="users"><div class="empty">待機中... クライアントが接続すると表示されます</div></div>
   </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, push, update, remove, onDisconnect
+  getDatabase, ref, onValue, set, push, update, remove
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ===== Firebase 設定 =====
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
-  projectId: "YOUR_PROJECT",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDsoktNvfhnMSBrHLyhSjgLBLYiih7cMFE",
+  authDomain: "doong-672e7.firebaseapp.com",
+  databaseURL: "https://doong-672e7-default-rtdb.firebaseio.com",
+  projectId: "doong-672e7",
+  storageBucket: "doong-672e7.firebasestorage.app",
+  messagingSenderId: "95643976140",
+  appId: "1:95643976140:web:cdcb757a9bc25bc7a75d69"
 };
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 // ===== セッションID =====
-// URL の ?s=xxxxx で指定 or 自動生成
 const params = new URLSearchParams(location.search);
 let sessionId = params.get("s");
 if (!sessionId) {
-  sessionId = Math.random().toString(36).slice(2, 10);
+  sessionId = Math.random().toString(36).slice(2, 8);
   params.set("s", sessionId);
-  location.search = params.toString();
+  history.replaceState(null, "", "?" + params.toString());
 }
 document.getElementById("sessionId").textContent = sessionId;
 
-// ===== ユーザー管理 =====
+// クライアントURLの表示
+const baseUrl = location.origin + location.pathname.replace(/index\.html$/, "").replace(/\/$/, "") + "/client/";
+const clientUrl = baseUrl + "?s=" + sessionId;
+document.getElementById("clientUrl").textContent = clientUrl;
+
+// ===== ユーザー監視 =====
 const usersEl = document.getElementById("users");
-const peerConnections = {}; // userId -> { pc, stream, video }
+const peerConnections = {};
+const processedIce = {};
 
 const usersRef = ref(db, `sessions/${sessionId}/users`);
 onValue(usersRef, (snap) => {
   const users = snap.val() || {};
   const ids = Object.keys(users);
 
-  // 新規ユーザーのカード生成
+  // 空メッセージの制御
+  const empty = usersEl.querySelector(".empty");
+  if (ids.length === 0) {
+    if (!empty) {
+      const d = document.createElement("div");
+      d.className = "empty";
+      d.textContent = "待機中... クライアントが接続すると表示されます";
+      usersEl.appendChild(d);
+    }
+  } else if (empty) {
+    empty.remove();
+  }
+
+  // 新規ユーザー
   for (const uid of ids) {
     if (!document.getElementById("card-" + uid)) {
       createUserCard(uid, users[uid]);
     }
     updateUserStatus(uid, users[uid]);
     handleOffer(uid, users[uid]);
-    handleAnswer(uid, users[uid]);
     handleIce(uid, users[uid]);
   }
 
-  // 削除されたユーザーのカード削除
+  // 削除されたユーザー
   document.querySelectorAll(".user-card").forEach(card => {
     const uid = card.dataset.uid;
     if (!users[uid]) {
@@ -139,10 +170,10 @@ function createUserCard(uid, user) {
   card.dataset.uid = uid;
   card.innerHTML = `
     <div class="header">
-      <strong>👤 ${uid.slice(0, 8)}</strong>
+      <strong>👤 ${uid}</strong>
       <span class="badge" id="badge-${uid}">offline</span>
     </div>
-    <video id="video-${uid}" autoplay playsinline></video>
+    <video id="video-${uid}" autoplay playsinline muted></video>
     <div class="actions">
       <button data-act="send" data-uid="${uid}">この人にURL送信</button>
       <button class="danger" data-act="stop" data-uid="${uid}">共有停止</button>
@@ -154,25 +185,23 @@ function createUserCard(uid, user) {
   card.querySelector('[data-act="send"]').onclick = () => sendToUser(uid);
   card.querySelector('[data-act="stop"]').onclick = () => closePeer(uid);
   card.querySelector('[data-act="reset"]').onclick = () => resetUser(uid);
-
-  // 視聴用のダミーストリームでカード表示を確保
 }
 
 function updateUserStatus(uid, user) {
   const badge = document.getElementById("badge-" + uid);
   if (!badge) return;
-  const online = user.status?.online === true;
+  const online = user.status && user.status.online === true;
   badge.textContent = online ? "online" : "offline";
   badge.className = "badge " + (online ? "online" : "offline");
 }
 
-// ===== WebRTC 受信側 =====
+// ===== WebRTC（管理者 = 受信側） =====
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
 
 function ensurePeer(uid) {
-  if (peerConnections[uid]?.pc) return peerConnections[uid];
+  if (peerConnections[uid] && peerConnections[uid].pc) return peerConnections[uid];
   const pc = new RTCPeerConnection(rtcConfig);
   const video = document.getElementById("video-" + uid);
   const remoteStream = new MediaStream();
@@ -180,6 +209,7 @@ function ensurePeer(uid) {
   pc.ontrack = (e) => {
     e.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
     video.srcObject = remoteStream;
+    video.play().catch(()=>{});
   };
 
   pc.onicecandidate = (e) => {
@@ -189,30 +219,31 @@ function ensurePeer(uid) {
     }
   };
 
-  peerConnections[uid] = { pc, video, remoteStream };
+  peerConnections[uid] = { pc, video, remoteStream, answerSent: false };
   return peerConnections[uid];
 }
 
 async function handleOffer(uid, user) {
-  const offer = user.signal?.offer;
+  const offer = user.signal && user.signal.offer;
   if (!offer) return;
   const peer = ensurePeer(uid);
-  if (peer.pc.signalingState !== "stable") return;
   if (peer.answerSent) return;
 
-  await peer.pc.setRemoteDescription(new RTCSessionDescription(offer));
-  const answer = await peer.pc.createAnswer();
-  await peer.pc.setLocalDescription(answer);
-  peer.answerSent = true;
-
-  await update(ref(db, `sessions/${sessionId}/users/${uid}/signal`), {
-    answer: { type: answer.type, sdp: answer.sdp }
-  });
+  try {
+    await peer.pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(answer);
+    peer.answerSent = true;
+    await update(ref(db, `sessions/${sessionId}/users/${uid}/signal`), {
+      answer: { type: answer.type, sdp: answer.sdp }
+    });
+  } catch (e) {
+    console.warn("offer処理エラー", e);
+  }
 }
 
-let processedIce = {};
 function handleIce(uid, user) {
-  const ices = user.signal?.userIce || {};
+  const ices = (user.signal && user.signal.userIce) || {};
   const peer = peerConnections[uid];
   if (!peer) return;
   processedIce[uid] = processedIce[uid] || new Set();
@@ -223,16 +254,13 @@ function handleIce(uid, user) {
   }
 }
 
-function handleAnswer() { /* 管理者側では不要 */ }
-
 function closePeer(uid) {
   const peer = peerConnections[uid];
   if (!peer) return;
-  peer.pc.close();
+  try { peer.pc.close(); } catch(e){}
   if (peer.video) peer.video.srcObject = null;
   delete peerConnections[uid];
   delete processedIce[uid];
-  // ユーザー側に停止を通知
   update(ref(db, `sessions/${sessionId}/users/${uid}/signal`), {
     adminStop: { ts: Date.now() }
   });
@@ -261,7 +289,7 @@ async function sendToUser(uid) {
     url,
     timestamp: Date.now()
   });
-  alert(`${uid.slice(0,8)} に送信しました`);
+  alert(`${uid} に送信しました`);
 }
 
 async function resetUser(uid) {
