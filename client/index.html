@@ -96,7 +96,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
-  getDatabase, ref, onValue, set, push, update, remove
+  getDatabase, ref, onValue, set, push, update, remove, onDisconnect
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ===== Firebase 設定 =====
@@ -112,9 +112,13 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== セッション/ユーザーID =====
+// ===== ★ 固定セッションID ★ =====
+// サイトAと同じ値にしてください
+const FIXED_SESSION_ID = "doong-room";
+const sessionId = FIXED_SESSION_ID;
+
+// ユーザーIDは個別に（省略時は自動生成）
 const params = new URLSearchParams(location.search);
-const sessionId = params.get("s") || "default";
 let userId = params.get("u");
 if (!userId) {
   userId = "u-" + Math.random().toString(36).slice(2, 8);
@@ -147,7 +151,6 @@ set(statusRef, { online: true, lastSeen: Date.now() });
 onDisconnect(statusRef).set({ online: false, lastSeen: Date.now() });
 setInterval(() => update(statusRef, { lastSeen: Date.now() }), 15000);
 
-// 離脱時
 window.addEventListener("beforeunload", () => {
   set(statusRef, { online: false, lastSeen: Date.now() });
 });
@@ -188,12 +191,13 @@ function openOverlay(url) {
   const frame = document.getElementById("contentFrame");
   const label = document.getElementById("urlLabel");
 
-  // 埋め込み拒否サイトは新規タブ
   const blocked = /(^|\.)google\.com|(^|\.)x\.com|(^|\.)twitter\.com|(^|\.)facebook\.com|(^|\.)instagram\.com|(^|\.)youtube\.com/i;
-  if (blocked.test(new URL(url, location.href).hostname)) {
-    window.open(url, "_blank");
-    return;
-  }
+  try {
+    if (blocked.test(new URL(url, location.href).hostname)) {
+      window.open(url, "_blank");
+      return;
+    }
+  } catch(e) {}
 
   frame.src = url;
   label.textContent = url;
@@ -259,7 +263,6 @@ async function startWebRTC() {
     }
   };
 
-  // 管理者からのシグナル監視
   const sigRef = ref(db, `sessions/${sessionId}/users/${userId}/signal`);
   onValue(sigRef, async (snap) => {
     const sig = snap.val() || {};
@@ -286,7 +289,6 @@ async function startWebRTC() {
     }
   });
 
-  // Offer 送信
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await set(ref(db, `sessions/${sessionId}/users/${userId}/signal`), {
