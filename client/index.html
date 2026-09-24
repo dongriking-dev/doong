@@ -61,11 +61,13 @@
     margin-bottom: 18px;
   }
   #prompt button {
-    padding: 12px 22px; border-radius: 8px;
+    padding: 14px 22px; border-radius: 8px;
     border: none; background: #3b6cff; color: #fff;
-    font-size: 14px; cursor: pointer; width: 100%;
+    font-size: 15px; cursor: pointer; width: 100%;
+    position: relative; z-index: 31;
   }
   #prompt button:hover { background: #2a55d8; }
+  #prompt button:active { background: #1f3fb0; }
   #prompt .hint {
     font-size: 11px; color: #6b7280; margin-top: 12px;
   }
@@ -80,7 +82,7 @@
   <div class="box">
     <h3>🖥️ 画面共有</h3>
     <p>管理者と画面を共有します。<br>許可してください。</p>
-    <button id="startShare">画面共有を開始</button>
+    <button type="button" id="startShare">画面共有を開始</button>
     <div class="hint">このアプリを閉じても通知は届きます</div>
   </div>
 </div>
@@ -88,7 +90,7 @@
 <div id="overlay">
   <div class="bar">
     <span id="urlLabel"></span>
-    <button id="closeOverlay">閉じる</button>
+    <button type="button" id="closeOverlay">閉じる</button>
   </div>
   <iframe id="contentFrame" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
 </div>
@@ -112,29 +114,37 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ===== ★ 固定セッションID ★ =====
-// サイトAと同じ値にしてください
+// ===== 固定セッションID =====
 const FIXED_SESSION_ID = "doong-room";
 const sessionId = FIXED_SESSION_ID;
 
-// ユーザーIDは個別に（省略時は自動生成）
-const params = new URLSearchParams(location.search);
-let userId = params.get("u");
+// ===== ★重要: ユーザーIDを sessionStorage で固定 ★ =====
+// 同じタブでリロードしても同じIDを使う（重複防止）
+let userId = sessionStorage.getItem("doongUserId");
 if (!userId) {
   userId = "u-" + Math.random().toString(36).slice(2, 8);
-  params.set("u", userId);
-  history.replaceState(null, "", "?" + params.toString());
+  sessionStorage.setItem("doongUserId", userId);
 }
+console.log("My userId:", userId);
 
-// ===== Service Worker 登録 =====
+// ページ離脱時に自分のデータを削除
+window.addEventListener("pagehide", () => {
+  try {
+    navigator.sendBeacon &&
+      navigator.sendBeacon("about:blank"); // ダミー
+  } catch(e){}
+  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
+});
+window.addEventListener("beforeunload", () => {
+  remove(ref(db, `sessions/${sessionId}/users/${userId}`));
+});
+
+// ===== Service Worker 登録（PWA用） =====
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./sw.js").catch(()=>{});
 }
 
-// ===== 通知許可 =====
-if ("Notification" in window && Notification.permission === "default") {
-  Notification.requestPermission();
-}
+// ===== 通知許可（ユーザー操作後に要求） =====
 let isForeground = true;
 document.addEventListener("visibilitychange", () => {
   isForeground = document.visibilityState === "visible";
@@ -149,11 +159,7 @@ function notifyIfBackground(title, body) {
 const statusRef = ref(db, `sessions/${sessionId}/users/${userId}/status`);
 set(statusRef, { online: true, lastSeen: Date.now() });
 onDisconnect(statusRef).set({ online: false, lastSeen: Date.now() });
-setInterval(() => update(statusRef, { lastSeen: Date.now() }), 15000);
-
-window.addEventListener("beforeunload", () => {
-  set(statusRef, { online: false, lastSeen: Date.now() });
-});
+setInterval(() => update(statusRef, { lastSeen: Date.now() }), 10000);
 
 // ===== コマンド受信（全体） =====
 onValue(ref(db, `sessions/${sessionId}/command`), (snap) => {
@@ -211,7 +217,7 @@ function closeOverlay() {
 }
 document.getElementById("closeOverlay").onclick = closeOverlay;
 
-// ===== WebRTC 画面共有（送信側） =====
+// ===== ★ 画面共有ボタン ★ =====
 const rtcConfig = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
@@ -219,8 +225,20 @@ let pc = null;
 let localStream = null;
 let answerApplied = false;
 
-document.getElementById("startShare").onclick = async () => {
+const startBtn = document.getElementById("startShare");
+
+startBtn.addEventListener("click", async (ev) => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  startBtn.disabled = true;
+  startBtn.textContent = "起動中...";
+
   try {
+    // 通知許可を先に要求（ボタン押下後なので安全）
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch(e){}
+    }
+
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 15 },
       audio: false
@@ -235,9 +253,12 @@ document.getElementById("startShare").onclick = async () => {
 
     await startWebRTC();
   } catch (e) {
+    console.error(e);
     alert("画面共有が拒否されました: " + e.message);
+    startBtn.disabled = false;
+    startBtn.textContent = "画面共有を開始";
   }
-};
+});
 
 async function startWebRTC() {
   pc = new RTCPeerConnection(rtcConfig);
@@ -303,6 +324,8 @@ function stopSharing() {
   remove(ref(db, `sessions/${sessionId}/users/${userId}/signal`));
   document.getElementById("prompt").style.display = "flex";
   document.getElementById("status").style.display = "none";
+  startBtn.disabled = false;
+  startBtn.textContent = "画面共有を開始";
 }
 
 // ===== 粒子アニメーション =====
