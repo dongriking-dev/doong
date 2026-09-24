@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>管理者画面 - 遠隔操作</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #0f1117; color: #e6e6e6;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .panel {
+    background: #1a1d26; border-radius: 10px; padding: 16px;
+    margin-bottom: 16px; border: 1px solid #2a2f3d;
+  }
+  label { display: block; font-size: 13px; margin-bottom: 6px; color: #9aa3b2; }
+  input[type="text"] {
+    width: 100%; padding: 10px 12px; border-radius: 6px;
+    border: 1px solid #2a2f3d; background: #0f1117; color: #e6e6e6;
+    font-size: 14px; margin-bottom: 10px;
+  }
+  button {
+    padding: 10px 16px; border-radius: 6px; border: none;
+    background: #3b6cff; color: #fff; font-size: 14px;
+    cursor: pointer; margin-right: 8px;
+  }
+  button:hover { background: #2a55d8; }
+  button.danger { background: #d84a4a; }
+  button.danger:hover { background: #b53838; }
+  .session-info { font-size: 12px; color: #9aa3b2; margin-bottom: 8px; }
+  #users {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 14px;
+  }
+  .user-card {
+    background: #1a1d26; border: 1px solid #2a2f3d;
+    border-radius: 10px; padding: 12px; display: flex; flex-direction: column;
+    gap: 8px;
+  }
+  .user-card .header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px;
+  }
+  .badge {
+    padding: 3px 8px; border-radius: 999px; font-size: 11px;
+    background: #2a2f3d; color: #9aa3b2;
+  }
+  .badge.online { background: #1f5b3a; color: #6dffb0; }
+  .badge.offline { background: #5b1f1f; color: #ff8c8c; }
+  video {
+    width: 100%; background: #000; border-radius: 6px;
+    aspect-ratio: 16/9; object-fit: contain;
+  }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <h1>🎛️ 管理者操作画面</h1>
+
+  <div class="panel">
+    <div class="session-info">セッションID: <span id="sessionId"></span></div>
+    <label>対象URL（全員 or 個別送信）</label>
+    <input type="text" id="urlInput" placeholder="https://example.com">
+    <div>
+      <button onclick="sendToAll()">📢 全員に送信</button>
+      <button class="danger" onclick="resetAll()">🛑 全員リセット</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin:0 0 10px; font-size:15px;">接続中のユーザー</h3>
+    <div id="users"></div>
+  </div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getDatabase, ref, onValue, set, push, update, remove, onDisconnect
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// ===== Firebase 設定 =====
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+  projectId: "YOUR_PROJECT",
+  appId: "YOUR_APP_ID"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// ===== セッションID =====
+// URL の ?s=xxxxx で指定 or 自動生成
+const params = new URLSearchParams(location.search);
+let sessionId = params.get("s");
+if (!sessionId) {
+  sessionId = Math.random().toString(36).slice(2, 10);
+  params.set("s", sessionId);
+  location.search = params.toString();
+}
+document.getElementById("sessionId").textContent = sessionId;
+
+// ===== ユーザー管理 =====
+const usersEl = document.getElementById("users");
+const peerConnections = {}; // userId -> { pc, stream, video }
+
+const usersRef = ref(db, `sessions/${sessionId}/users`);
+onValue(usersRef, (snap) => {
+  const users = snap.val() || {};
+  const ids = Object.keys(users);
+
+  // 新規ユーザーのカード生成
+  for (const uid of ids) {
+    if (!document.getElementById("card-" + uid)) {
+      createUserCard(uid, users[uid]);
+    }
+    updateUserStatus(uid, users[uid]);
+    handleOffer(uid, users[uid]);
+    handleAnswer(uid, users[uid]);
+    handleIce(uid, users[uid]);
+  }
+
+  // 削除されたユーザーのカード削除
+  document.querySelectorAll(".user-card").forEach(card => {
+    const uid = card.dataset.uid;
+    if (!users[uid]) {
+      cleanupPeer(uid);
+      card.remove();
+    }
+  });
+});
+
+function createUserCard(uid, user) {
+  const card = document.createElement("div");
+  card.className = "user-card";
+  card.id = "card-" + uid;
+  card.dataset.uid = uid;
+  card.innerHTML = `
+    <div class="header">
+      <strong>👤 ${uid.slice(0, 8)}</strong>
+      <span class="badge" id="badge-${uid}">offline</span>
+    </div>
+    <video id="video-${uid}" autoplay playsinline></video>
+    <div class="actions">
+      <button data-act="send" data-uid="${uid}">この人にURL送信</button>
+      <button class="danger" data-act="stop" data-uid="${uid}">共有停止</button>
+      <button class="danger" data-act="reset" data-uid="${uid}">リセット</button>
+    </div>
+  `;
+  usersEl.appendChild(card);
+
+  card.querySelector('[data-act="send"]').onclick = () => sendToUser(uid);
+  card.querySelector('[data-act="stop"]').onclick = () => closePeer(uid);
+  card.querySelector('[data-act="reset"]').onclick = () => resetUser(uid);
+
+  // 視聴用のダミーストリームでカード表示を確保
+}
+
+function updateUserStatus(uid, user) {
+  const badge = document.getElementById("badge-" + uid);
+  if (!badge) return;
+  const online = user.status?.online === true;
+  badge.textContent = online ? "online" : "offline";
+  badge.className = "badge " + (online ? "online" : "offline");
+}
+
+// ===== WebRTC 受信側 =====
+const rtcConfig = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+};
+
+function ensurePeer(uid) {
+  if (peerConnections[uid]?.pc) return peerConnections[uid];
+  const pc = new RTCPeerConnection(rtcConfig);
+  const video = document.getElementById("video-" + uid);
+  const remoteStream = new MediaStream();
+
+  pc.ontrack = (e) => {
+    e.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+    video.srcObject = remoteStream;
+  };
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      const iceRef = ref(db, `sessions/${sessionId}/users/${uid}/signal/adminIce`);
+      push(iceRef, e.candidate.toJSON());
+    }
+  };
+
+  peerConnections[uid] = { pc, video, remoteStream };
+  return peerConnections[uid];
+}
+
+async function handleOffer(uid, user) {
+  const offer = user.signal?.offer;
+  if (!offer) return;
+  const peer = ensurePeer(uid);
+  if (peer.pc.signalingState !== "stable") return;
+  if (peer.answerSent) return;
+
+  await peer.pc.setRemoteDescription(new RTCSessionDescription(offer));
+  const answer = await peer.pc.createAnswer();
+  await peer.pc.setLocalDescription(answer);
+  peer.answerSent = true;
+
+  await update(ref(db, `sessions/${sessionId}/users/${uid}/signal`), {
+    answer: { type: answer.type, sdp: answer.sdp }
+  });
+}
+
+let processedIce = {};
+function handleIce(uid, user) {
+  const ices = user.signal?.userIce || {};
+  const peer = peerConnections[uid];
+  if (!peer) return;
+  processedIce[uid] = processedIce[uid] || new Set();
+  for (const [key, cand] of Object.entries(ices)) {
+    if (processedIce[uid].has(key)) continue;
+    processedIce[uid].add(key);
+    peer.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(()=>{});
+  }
+}
+
+function handleAnswer() { /* 管理者側では不要 */ }
+
+function closePeer(uid) {
+  const peer = peerConnections[uid];
+  if (!peer) return;
+  peer.pc.close();
+  if (peer.video) peer.video.srcObject = null;
+  delete peerConnections[uid];
+  delete processedIce[uid];
+  // ユーザー側に停止を通知
+  update(ref(db, `sessions/${sessionId}/users/${uid}/signal`), {
+    adminStop: { ts: Date.now() }
+  });
+}
+
+function cleanupPeer(uid) {
+  closePeer(uid);
+}
+
+// ===== URL 送信 =====
+async function sendToAll() {
+  const url = document.getElementById("urlInput").value.trim();
+  if (!url) return alert("URLを入力してください");
+  await set(ref(db, `sessions/${sessionId}/command`), {
+    url,
+    timestamp: Date.now(),
+    target: "all"
+  });
+  alert("全員に送信しました");
+}
+
+async function sendToUser(uid) {
+  const url = document.getElementById("urlInput").value.trim();
+  if (!url) return alert("URLを入力してください");
+  await set(ref(db, `sessions/${sessionId}/users/${uid}/command`), {
+    url,
+    timestamp: Date.now()
+  });
+  alert(`${uid.slice(0,8)} に送信しました`);
+}
+
+async function resetUser(uid) {
+  await set(ref(db, `sessions/${sessionId}/users/${uid}/command`), {
+    url: "",
+    timestamp: Date.now(),
+    reset: true
+  });
+}
+
+async function resetAll() {
+  await set(ref(db, `sessions/${sessionId}/command`), {
+    url: "",
+    timestamp: Date.now(),
+    reset: true,
+    target: "all"
+  });
+}
+</script>
+</body>
+</html>
